@@ -1,0 +1,16 @@
+services:
+  database:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: habit_tracker
+      POSTGRES_PASSWORD: habit_tracker
+      POSTGRES_DB: habit_tracker
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./.postgres/docker-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U habit_tracker -d habit_tracker"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
