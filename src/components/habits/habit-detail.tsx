@@ -21,6 +21,7 @@ import { targetForDate } from "@/domain/habit-engine";
 import type { DashboardHabit } from "@/server/services/habit-service";
 import { CheckInDrawer } from "@/components/check-in/check-in-drawer";
 import { HabitHeatmap } from "@/components/heatmap/habit-heatmap";
+import { habitAccentStyle } from "./accent-style";
 
 export function HabitDetail({ item, today }: { item: DashboardHabit; today: string }) {
   const router = useRouter();
@@ -49,7 +50,7 @@ export function HabitDetail({ item, today }: { item: DashboardHabit; today: stri
   };
 
   return (
-    <section className="content-page habit-detail-page" data-accent={item.habit.accentToken}>
+    <section className="content-page habit-detail-page" data-accent={item.habit.accentToken} style={habitAccentStyle(item.habit.customColor)}>
       <Link className="back-link" href="/habits">
         <ArrowLeft aria-hidden="true" size={17} /> All habits
       </Link>
@@ -90,7 +91,7 @@ export function HabitDetail({ item, today }: { item: DashboardHabit; today: stri
           {currentTarget ? (
             <div className="target-summary">
               <strong>{currentTarget.targetValue} {currentTarget.unit ?? "completion"}</strong>
-              <span>{currentTarget.cadence === "daily" ? "each scheduled day" : "each week"}</span>
+              <span>{currentTarget.cadence === "hourly" ? "each hour" : currentTarget.cadence === "daily" ? "each scheduled day" : "each week"}</span>
               <small>{currentTarget.metric} · effective {currentTarget.effectiveFrom}</small>
             </div>
           ) : <p className="page-empty">No current target.</p>}
@@ -176,6 +177,7 @@ function TargetDialog({
           targetValue: metric === "binary" ? 1 : value,
           unit: metric === "binary" ? null : unit,
           scheduledWeekdays: target.scheduledWeekdays,
+          scheduledHours: target.scheduledHours ?? null,
         },
       }),
     });
@@ -194,9 +196,9 @@ function TargetDialog({
       <section aria-labelledby="target-dialog-title" aria-modal="true" className="drawer compact-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog">
         <header className="drawer-header"><div><p className="eyebrow">NEW VERSION</p><h2 id="target-dialog-title">Edit target</h2></div><button aria-label="Close target editor" className="icon-button" onClick={onClose} type="button"><X /></button></header>
         <form className="drawer-body" onSubmit={submit}>
-          <label className="field"><span>Measure</span><select value={metric} onChange={(event) => setMetric(event.target.value as typeof metric)}><option value="binary">Done or not done</option><option value="count">Quantity</option><option value="duration">Duration</option></select></label>
-          <label className="field"><span>Cadence</span><select value={cadence} onChange={(event) => setCadence(event.target.value as typeof cadence)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
-          {metric !== "binary" ? <div className="split-fields"><label className="field"><span>Target value</span><input min="0.01" type="number" value={value} onChange={(event) => setValue(Number(event.target.value))} /></label><label className="field"><span>Unit</span><input value={unit} onChange={(event) => setUnit(event.target.value)} /></label></div> : null}
+          <fieldset aria-label="Measure" className="radio-group"><span>Measure</span><div><label><input checked={metric === "binary"} name="metric" onChange={() => setMetric("binary")} type="radio" value="binary" /> Done or not done</label><label><input checked={metric === "count"} name="metric" onChange={() => setMetric("count")} type="radio" value="count" /> Quantity</label><label><input checked={metric === "duration"} name="metric" onChange={() => setMetric("duration")} type="radio" value="duration" /> Duration</label></div></fieldset>
+          <fieldset aria-label="Cadence" className="radio-group"><span>Cadence</span><div><label><input checked={cadence === "hourly"} name="cadence" onChange={() => setCadence("hourly")} type="radio" value="hourly" /> Hourly</label><label><input checked={cadence === "daily"} name="cadence" onChange={() => setCadence("daily")} type="radio" value="daily" /> Daily</label><label><input checked={cadence === "weekly"} name="cadence" onChange={() => setCadence("weekly")} type="radio" value="weekly" /> Weekly</label></div></fieldset>
+          {metric !== "binary" ? <div className="split-fields"><label className="field"><span>Target value</span><input min="1" step="1" type="number" value={value} onChange={(event) => setValue(Number(event.target.value))} /></label><label className="field"><span>Unit</span><input value={unit} onChange={(event) => setUnit(event.target.value)} /></label></div> : null}
           <p className="effective-note">Takes effect {effectiveFrom}. Historical entries keep their original rule.</p>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
           <div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" disabled={saving} type="submit">{saving ? <LoaderCircle className="spin" size={17} /> : null} Save target</button></div>

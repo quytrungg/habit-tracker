@@ -1,17 +1,23 @@
 "use client";
 
 import { format, parseISO } from "date-fns";
-import { Check, LoaderCircle, Trash2, X } from "lucide-react";
+import { Check, LoaderCircle, Sparkles, Trash2, X } from "lucide-react";
 import { useState } from "react";
 
-import { isScheduled, targetForDate } from "@/domain/habit-engine";
-import type { CheckpointAward } from "@/domain/types";
+import { baseXpForTarget, calculateHabitXp, isScheduled, targetForDate } from "@/domain/habit-engine";
+import type { Checkin, CheckpointAward } from "@/domain/types";
 import type { DashboardHabit } from "@/server/services/habit-service";
+import { habitAccentStyle } from "@/components/habits/accent-style";
 
 type AwardResult = Pick<
   CheckpointAward,
   "id" | "checkpointId" | "progressSnapshot"
 >[];
+
+export type CheckinSaveResult = {
+  awards: AwardResult;
+  xpDelta: number;
+};
 
 export function CheckInDrawer({
   habit,
@@ -22,10 +28,15 @@ export function CheckInDrawer({
   habit: DashboardHabit;
   date: string;
   onClose: () => void;
-  onSaved: (awards: AwardResult) => void;
+  onSaved: (result: CheckinSaveResult) => void;
 }) {
   const target = targetForDate(habit.targets, date);
-  const entry = habit.checkins.find((candidate) => candidate.localDate === date);
+  const currentHour = new Date().getHours();
+  const entry = habit.checkins.find(
+    (candidate) =>
+      candidate.localDate === date &&
+      (target?.cadence !== "hourly" || candidate.localHour === currentHour),
+  );
   const [value, setValue] = useState(entry?.value ?? 0);
   const [note, setNote] = useState(entry?.note ?? "");
   const [isSkipped, setIsSkipped] = useState(entry?.isSkipped ?? false);
@@ -54,13 +65,14 @@ export function CheckInDrawer({
       );
       const result = (await response.json()) as {
         newAwards?: AwardResult;
+        xpDelta?: number;
         error?: { message?: string };
       };
       if (!response.ok) {
         setError(result.error?.message ?? "Could not save this check-in");
         return;
       }
-      onSaved(result.newAwards ?? []);
+      onSaved({ awards: result.newAwards ?? [], xpDelta: result.xpDelta ?? 0 });
       if (closeAfter) onClose();
     } catch {
       setError("The server could not be reached. Your note is still here.");
@@ -83,7 +95,7 @@ export function CheckInDrawer({
         setError(result.error?.message ?? "Could not delete this entry");
         return;
       }
-      onSaved([]);
+      onSaved({ awards: [], xpDelta: 0 });
       onClose();
     } catch {
       setError("The server could not be reached.");
@@ -113,6 +125,28 @@ export function CheckInDrawer({
 
   const formattedDate = format(parseISO(`${date}T12:00:00`), "EEEE, MMMM d");
   const progressLabel = `Progress${target.unit ? ` in ${target.unit}` : ""}`;
+  const xpAvailable = baseXpForTarget(target);
+  const xpTotal = (checkins: Checkin[]) =>
+    [...calculateHabitXp(habit.targets, checkins).values()].reduce(
+      (total, xp) => total + xp,
+      0,
+    );
+  const previewEntry: Checkin = {
+    id: entry?.id ?? "xp-preview",
+    habitId: habit.habit.id,
+    targetId: target.id,
+    localDate: date,
+    localHour: target.cadence === "hourly" ? currentHour : null,
+    value: isSkipped ? 0 : value,
+    isSkipped,
+    note: note || null,
+  };
+  const projectedCheckins = entry
+    ? habit.checkins.map((checkin) =>
+        checkin.id === entry.id ? previewEntry : checkin,
+      )
+    : [...habit.checkins, previewEntry];
+  const projectedXp = Math.max(0, xpTotal(projectedCheckins) - xpTotal(habit.checkins));
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -121,6 +155,7 @@ export function CheckInDrawer({
         aria-modal="true"
         className="drawer"
         data-accent={habit.habit.accentToken}
+        style={habitAccentStyle(habit.habit.customColor)}
         onMouseDown={(event) => event.stopPropagation()}
         role="dialog"
       >
@@ -131,8 +166,8 @@ export function CheckInDrawer({
               {habit.habit.icon} {habit.habit.name}
             </h2>
             <p className="drawer-context">
-              {scheduled ? "Scheduled day" : "Optional day"} · Target {target.targetValue}
-              {target.unit ? ` ${target.unit}` : " completion"}
+              {target.cadence === "hourly" ? "Current hour" : scheduled ? "Scheduled day" : "Optional day"} · Target {target.targetValue}
+              {target.unit ? ` ${target.unit}` : " completion"} · Up to {xpAvailable} XP
             </p>
           </div>
           <button
@@ -178,18 +213,22 @@ export function CheckInDrawer({
                   id="checkin-progress"
                   min="0"
                   onChange={(event) => setValue(Number(event.target.value))}
-                  step={target.metric === "duration" ? 5 : 1}
+                  step="1"
                   type="number"
                   value={value}
                 />
                 <button
                   aria-label="Increase progress"
-                  onClick={() => setValue(value + (target.metric === "duration" ? 5 : 1))}
+                  onClick={() => setValue(value + 1)}
                   type="button"
                 >
                   +
                 </button>
               </div>
+              <p className="xp-progress-preview" role="status">
+                <Sparkles aria-hidden="true" size={15} /> This check-in will earn {projectedXp} XP
+                <small>Complete the target for up to {xpAvailable} XP.</small>
+              </p>
             </div>
           )}
 
@@ -202,7 +241,7 @@ export function CheckInDrawer({
               }}
               type="checkbox"
             />
-            <span>Mark this day as skipped</span>
+            <span>Mark this {target.cadence === "hourly" ? "hour" : "day"} as skipped</span>
           </label>
 
           <label className="field" htmlFor="checkin-note">

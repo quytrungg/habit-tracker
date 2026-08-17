@@ -21,7 +21,7 @@ export const habitMetricEnum = pgEnum("habit_metric", [
   "count",
   "duration",
 ]);
-export const habitCadenceEnum = pgEnum("habit_cadence", ["daily", "weekly"]);
+export const habitCadenceEnum = pgEnum("habit_cadence", ["hourly", "daily", "weekly"]);
 export const checkpointMetricEnum = pgEnum("checkpoint_metric", [
   "completed_periods",
   "current_streak",
@@ -33,6 +33,11 @@ export const accentTokenEnum = pgEnum("accent_token", [
   "amber",
   "violet",
   "rose",
+  "teal",
+  "indigo",
+  "lime",
+  "coral",
+  "fuchsia",
 ]);
 
 const timestamps = {
@@ -90,6 +95,7 @@ export const habits = pgTable(
     description: varchar("description", { length: 500 }),
     icon: varchar("icon", { length: 32 }).notNull(),
     accentToken: accentTokenEnum("accent_token").notNull(),
+    customColor: varchar("custom_color", { length: 7 }),
     startDate: date("start_date", { mode: "string" }).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     sortOrder: integer("sort_order").default(0).notNull(),
@@ -118,6 +124,7 @@ export const habitTargets = pgTable(
     unit: varchar("unit", { length: 32 }),
     cadence: habitCadenceEnum("cadence").notNull(),
     scheduledWeekdays: smallint("scheduled_weekdays").array(),
+    scheduledHours: smallint("scheduled_hours").array(),
     effectiveFrom: date("effective_from", { mode: "string" }).notNull(),
     effectiveTo: date("effective_to", { mode: "string" }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -156,6 +163,7 @@ export const habitCheckins = pgTable(
       .notNull()
       .references(() => habitTargets.id, { onDelete: "restrict" }),
     localDate: date("local_date", { mode: "string" }).notNull(),
+    localHour: smallint("local_hour"),
     value: numeric("value", {
       precision: 12,
       scale: 2,
@@ -169,15 +177,24 @@ export const habitCheckins = pgTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("habit_checkins_habit_date_unique").on(
+    uniqueIndex("habit_checkins_daily_date_unique")
+      .on(
       table.habitId,
       table.localDate,
-    ),
+      )
+      .where(sql`${table.localHour} is null`),
+    uniqueIndex("habit_checkins_hourly_date_hour_unique")
+      .on(table.habitId, table.localDate, table.localHour)
+      .where(sql`${table.localHour} is not null`),
     index("habit_checkins_habit_date_idx").on(
       table.habitId,
       table.localDate,
     ),
     check("habit_checkins_value_non_negative", sql`${table.value} >= 0`),
+    check(
+      "habit_checkins_valid_local_hour",
+      sql`${table.localHour} is null or (${table.localHour} >= 0 and ${table.localHour} <= 23)`,
+    ),
     check(
       "habit_checkins_skipped_zero",
       sql`not ${table.isSkipped} or ${table.value} = 0`,

@@ -1,0 +1,1 @@
+ALTER TABLE "habit_targets" ADD COLUMN "scheduled_hours" smallint[];

@@ -8,7 +8,20 @@ export const accentTokenSchema = z.enum([
   "amber",
   "violet",
   "rose",
+  "teal",
+  "indigo",
+  "lime",
+  "coral",
+  "fuchsia",
 ]);
+
+export const customColorSchema = z
+  .string()
+  .regex(/^#[\da-f]{6}$/i, "Use a six-digit hex color")
+  .transform((color) => color.toLowerCase())
+  .nullable()
+  .optional()
+  .default(null);
 
 export const localDateSchema = z
   .string()
@@ -29,20 +42,37 @@ const weekdaysSchema = z
     }
   });
 
+const hoursSchema = z
+  .array(z.number().int().min(0).max(23))
+  .max(24)
+  .nullable()
+  .default(null)
+  .superRefine((hours, context) => {
+    if (hours && new Set(hours).size !== hours.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Scheduled hours must be unique",
+      });
+    }
+  });
+
 export const targetInputSchema = z
   .object({
     metric: z.enum(["binary", "count", "duration"]),
     targetValue: z.coerce.number().positive().max(1_000_000),
     unit: z.string().trim().min(1).max(32).nullable().optional().default(null),
-    cadence: z.enum(["daily", "weekly"]),
+    cadence: z.enum(["hourly", "daily", "weekly"]),
     scheduledWeekdays: weekdaysSchema,
+    scheduledHours: hoursSchema,
   })
   .transform((target) => ({
     ...target,
     targetValue: target.metric === "binary" ? 1 : target.targetValue,
     unit: target.metric === "binary" ? null : target.unit,
     scheduledWeekdays:
-      target.cadence === "weekly" ? null : target.scheduledWeekdays,
+      target.cadence === "daily" ? target.scheduledWeekdays : null,
+    scheduledHours:
+      target.cadence === "hourly" ? target.scheduledHours : null,
   }));
 
 export const checkpointInputSchema = z.object({
@@ -57,6 +87,7 @@ export const createHabitInputSchema = z.object({
   description: z.string().trim().max(500).nullable().optional().default(null),
   icon: z.string().trim().min(1).max(32),
   accentToken: accentTokenSchema,
+  customColor: customColorSchema,
   startDate: localDateSchema,
   target: targetInputSchema,
   checkpoints: z.array(checkpointInputSchema).max(20).default([]),
@@ -68,6 +99,7 @@ export const updateHabitInputSchema = z
     description: z.string().trim().max(500).nullable().optional(),
     icon: z.string().trim().min(1).max(32).optional(),
     accentToken: accentTokenSchema.optional(),
+    customColor: customColorSchema.optional(),
     archived: z.boolean().optional(),
     sortOrder: z.number().int().min(0).optional(),
   })

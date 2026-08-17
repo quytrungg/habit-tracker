@@ -1,11 +1,21 @@
 export type HabitMetric = "binary" | "count" | "duration";
-export type HabitCadence = "daily" | "weekly";
+export type HabitCadence = "hourly" | "daily" | "weekly";
 export type CheckpointMetric =
   | "completed_periods"
   | "current_streak"
   | "total_value";
 
-export type AccentToken = "emerald" | "azure" | "amber" | "violet" | "rose";
+export type AccentToken =
+  | "emerald"
+  | "azure"
+  | "amber"
+  | "violet"
+  | "rose"
+  | "teal"
+  | "indigo"
+  | "lime"
+  | "coral"
+  | "fuchsia";
 
 export type HabitTarget = {
   id: string;
@@ -15,6 +25,7 @@ export type HabitTarget = {
   unit: string | null;
   cadence: HabitCadence;
   scheduledWeekdays: number[] | null;
+  scheduledHours?: number[] | null;
   effectiveFrom: string;
   effectiveTo: string | null;
 };
@@ -24,6 +35,7 @@ export type Checkin = {
   habitId: string;
   targetId: string;
   localDate: string;
+  localHour?: number | null;
   value: number;
   isSkipped: boolean;
   note: string | null;
@@ -73,6 +85,7 @@ export type Habit = {
   description: string | null;
   icon: string;
   accentToken: AccentToken;
+  customColor: string | null;
   startDate: string;
   archivedAt: Date | null;
   sortOrder: number;

@@ -1,12 +1,13 @@
 "use client";
 
 import { differenceInCalendarDays, format, parseISO } from "date-fns";
-import { Check, Flame, Gift, PencilLine } from "lucide-react";
+import { Check, Flame, Gift, PencilLine, Sparkles } from "lucide-react";
 import Link from "next/link";
 
-import { targetForDate } from "@/domain/habit-engine";
+import { baseXpForTarget, targetForDate } from "@/domain/habit-engine";
 import type { DashboardHabit } from "@/server/services/habit-service";
 import { HabitHeatmap } from "@/components/heatmap/habit-heatmap";
+import { habitAccentStyle } from "./accent-style";
 
 export function HabitCard({
   item,
@@ -25,7 +26,9 @@ export function HabitCard({
       parseISO(`${today}T12:00:00`),
       parseISO(`${item.habit.startDate}T12:00:00`),
     ) + 1;
-  const isComplete = target ? item.todayValue >= target.targetValue : false;
+  const isComplete = target
+    ? target.cadence !== "hourly" && item.todayValue >= target.targetValue
+    : false;
   const progressText = target
     ? target.metric === "binary"
       ? isComplete
@@ -41,9 +44,10 @@ export function HabitCard({
   const checkpointPercent = checkpoint
     ? Math.min(100, (checkpoint.progress / checkpoint.thresholdValue) * 100)
     : 0;
+  const xpAvailable = target ? baseXpForTarget(target) : null;
 
   return (
-    <article className="habit-card" data-accent={item.habit.accentToken}>
+    <article className="habit-card" data-accent={item.habit.accentToken} style={habitAccentStyle(item.habit.customColor)}>
       <header className="habit-card-header">
         <Link className="habit-heading-link" href={`/habits/${item.habit.id}`}>
           <span className="habit-icon" aria-hidden="true">
@@ -88,6 +92,10 @@ export function HabitCard({
             <span style={{ width: `${checkpointPercent}%` }} />
           </div>
         </div>
+      ) : null}
+
+      {xpAvailable ? (
+        <p className="habit-xp-preview"><Sparkles aria-hidden="true" size={14} /> Up to {xpAvailable} XP for this target</p>
       ) : null}
 
       <button

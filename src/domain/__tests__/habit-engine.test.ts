@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildHeatmap,
+  baseXpForTarget,
+  calculateHabitXp,
   calculateHabitStats,
   evaluateCheckpoint,
   progressForTargetPeriod,
@@ -159,6 +161,72 @@ describe("progressForTargetPeriod", () => {
     ];
 
     expect(progressForTargetPeriod(weeklyTarget, "2026-08-14", checkins)).toBe(2);
+  });
+});
+
+describe("calculateHabitXp", () => {
+  it("increases the available XP with daily frequency", () => {
+    expect(baseXpForTarget({ ...dailyTarget, cadence: "hourly" })).toBe(4);
+    expect(baseXpForTarget({ ...dailyTarget, scheduledWeekdays: [1] })).toBe(10);
+    expect(baseXpForTarget({ ...dailyTarget, scheduledWeekdays: [1, 2, 3] })).toBe(14);
+    expect(baseXpForTarget({ ...dailyTarget, scheduledWeekdays: null })).toBe(22);
+    expect(baseXpForTarget({ ...dailyTarget, cadence: "weekly" })).toBe(30);
+  });
+
+  it("awards quantity XP in proportion to progress toward a daily target", () => {
+    const xp = calculateHabitXp([dailyTarget], [
+      entry("2026-08-14", 2),
+      entry("2026-08-15", 6),
+      entry("2026-08-16", 8),
+    ]);
+
+    expect(xp.get("entry-2026-08-14")).toBe(5);
+    expect(xp.get("entry-2026-08-15")).toBe(16);
+    expect(xp.get("entry-2026-08-16")).toBe(22);
+  });
+
+  it("does not award XP for an optional day outside a scheduled rhythm", () => {
+    const threeDayTarget = { ...dailyTarget, scheduledWeekdays: [1, 3, 5] };
+    const xp = calculateHabitXp([threeDayTarget], [entry("2026-08-11", 8)]);
+
+    expect(xp.get("entry-2026-08-11")).toBe(0);
+  });
+
+  it("splits a weekly XP pool across check-ins without exceeding it", () => {
+    const weeklyTarget: HabitTarget = {
+      ...dailyTarget,
+      id: "weekly-xp",
+      cadence: "weekly",
+      targetValue: 3,
+    };
+    const xp = calculateHabitXp([weeklyTarget], [
+      { ...entry("2026-08-10", 1), targetId: weeklyTarget.id },
+      { ...entry("2026-08-12", 1), targetId: weeklyTarget.id },
+      { ...entry("2026-08-14", 1), targetId: weeklyTarget.id },
+      { ...entry("2026-08-15", 2, { isSkipped: true }), targetId: weeklyTarget.id },
+    ]);
+
+    expect([...xp.values()]).toEqual([10, 10, 10, 0]);
+    expect([...xp.values()].reduce((total, value) => total + value, 0)).toBe(30);
+  });
+
+  it("awards the smaller hourly XP pool for every completed hour", () => {
+    const hourlyTarget: HabitTarget = {
+      ...dailyTarget,
+      id: "hourly-xp",
+      cadence: "hourly",
+      targetValue: 2,
+    };
+    const xp = calculateHabitXp([hourlyTarget], [
+      { ...entry("2026-08-14", 2, { id: "hour-8", localHour: 8 }), targetId: hourlyTarget.id },
+      { ...entry("2026-08-14", 2, { id: "hour-9", localHour: 9 }), targetId: hourlyTarget.id },
+    ]);
+
+    expect([...xp.values()]).toEqual([4, 4]);
+    expect(progressForTargetPeriod(hourlyTarget, "2026-08-14", [
+      { ...entry("2026-08-14", 2, { id: "hour-8", localHour: 8 }), targetId: hourlyTarget.id },
+      { ...entry("2026-08-14", 2, { id: "hour-9", localHour: 9 }), targetId: hourlyTarget.id },
+    ])).toBe(4);
   });
 });
 

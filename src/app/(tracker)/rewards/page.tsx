@@ -5,6 +5,8 @@ import { db } from "@/db";
 import { todayInTimeZone } from "@/domain/habit-engine";
 import { requireUser } from "@/server/auth/session";
 import { getDashboard } from "@/server/services/habit-service";
+import { habitAccentStyle } from "@/components/habits/accent-style";
+import { XpDashboard } from "@/components/rewards/xp-dashboard";
 
 export default async function RewardsPage() {
   const user = await requireUser();
@@ -17,6 +19,7 @@ export default async function RewardsPage() {
       habitName: item.habit.name,
       habitIcon: item.habit.icon,
       accentToken: item.habit.accentToken,
+      customColor: item.habit.customColor,
     })),
   );
   const earned = rewards.filter((reward) => reward.isEarned);
@@ -33,10 +36,12 @@ export default async function RewardsPage() {
         <span className="page-stat"><Gift /> {earned.length} earned</span>
       </header>
 
+      <XpDashboard points={data.xpHistory} />
+
       <h2 className="section-title">Up next</h2>
       <div className="reward-grid">
         {upcoming.length ? upcoming.map((reward) => (
-          <article className="reward-card" data-accent={reward.accentToken} key={reward.id}>
+          <article className="reward-card" data-accent={reward.accentToken} key={reward.id} style={habitAccentStyle(reward.customColor)}>
             <LockKeyhole aria-hidden="true" />
             <div>
               <small>{reward.habitIcon} {reward.habitName}</small>
@@ -52,7 +57,7 @@ export default async function RewardsPage() {
       <h2 className="section-title">Earned</h2>
       <div className="reward-grid">
         {earned.length ? earned.map((reward) => (
-          <article className="reward-card earned" data-accent={reward.accentToken} key={reward.id}>
+          <article className="reward-card earned" data-accent={reward.accentToken} key={reward.id} style={habitAccentStyle(reward.customColor)}>
             <Check aria-hidden="true" />
             <div>
               <small>{reward.habitIcon} {reward.habitName}</small>

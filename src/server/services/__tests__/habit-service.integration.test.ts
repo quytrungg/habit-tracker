@@ -8,6 +8,7 @@ import {
   createHabit,
   createTargetVersion,
   getDashboard,
+  updateHabit,
   upsertCheckin,
 } from "@/server/services/habit-service";
 
@@ -37,6 +38,7 @@ const habitInput = {
   description: "Eight glasses every day",
   icon: "💧",
   accentToken: "azure" as const,
+  customColor: null,
   startDate: "2026-08-10",
   target: {
     metric: "count" as const,
@@ -100,6 +102,59 @@ describe("habit service", () => {
     expect(dashboard.habits).toEqual([]);
   });
 
+  it("limits free users to five active habits", async () => {
+    const user = await createUser("owner@example.com");
+    let firstHabitId = "";
+    for (let index = 0; index < 5; index += 1) {
+      const { habit } = await createHabit(database, user.id, {
+        ...habitInput,
+        name: `Habit ${index + 1}`,
+      });
+      if (index === 0) firstHabitId = habit.id;
+    }
+
+    await expect(
+      createHabit(database, user.id, { ...habitInput, name: "Habit 6" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await updateHabit(database, user.id, firstHabitId, { archived: true });
+    await expect(
+      createHabit(database, user.id, { ...habitInput, name: "Replacement habit" }),
+    ).resolves.toMatchObject({ habit: { name: "Replacement habit" } });
+  });
+
+  it("stores one hourly check-in for each local hour", async () => {
+    const user = await createUser("owner@example.com");
+    const { habit } = await createHabit(database, user.id, {
+      ...habitInput,
+      target: { ...habitInput.target, cadence: "hourly", targetValue: 1 },
+    });
+
+    await upsertCheckin(database, {
+      userId: user.id,
+      habitId: habit.id,
+      localDate: "2026-08-14",
+      input: { value: 1, isSkipped: false, note: null },
+      now: new Date("2026-08-14T01:00:00.000Z"),
+    });
+    await upsertCheckin(database, {
+      userId: user.id,
+      habitId: habit.id,
+      localDate: "2026-08-14",
+      input: { value: 1, isSkipped: false, note: null },
+      now: new Date("2026-08-14T02:00:00.000Z"),
+    });
+
+    const dashboard = await getDashboard(database, {
+      userId: user.id,
+      from: "2026-08-10",
+      to: "2026-08-14",
+      today: "2026-08-14",
+    });
+    expect(dashboard.habits[0].checkins).toHaveLength(2);
+    expect(dashboard.totalXp).toBe(8);
+  });
+
   it("upserts one note-bearing entry per local day and preserves the note", async () => {
     const user = await createUser("owner@example.com");
     const { habit } = await createHabit(database, user.id, habitInput);
@@ -122,6 +177,19 @@ describe("habit service", () => {
     expect(result.checkin).toMatchObject({
       value: 8,
       note: "Finished after lunch",
+    });
+    expect(result.xpDelta).toBe(11);
+    const dashboard = await getDashboard(database, {
+      userId: user.id,
+      from: "2026-08-10",
+      to: "2026-08-14",
+      today: "2026-08-14",
+    });
+    expect(dashboard.totalXp).toBe(22);
+    expect(dashboard.xpHistory.at(-1)).toMatchObject({
+      date: "2026-08-14",
+      earnedXp: 22,
+      totalXp: 22,
     });
     const [{ count }] = await sql<{ count: number }[]>
       `SELECT count(*)::int AS count FROM habit_checkins`;

@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   gte,
@@ -10,14 +11,17 @@ import {
   max,
 } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { getISODay, parseISO } from "date-fns";
+import { eachDayOfInterval, format, getISODay, parseISO } from "date-fns";
 
 import * as schema from "@/db/schema";
 import {
   buildHeatmap,
+  calculateHabitXp,
   calculateHabitStats,
   evaluateCheckpoint,
+  isScheduled,
   isValidLocalDate,
+  hourInTimeZone,
   previousLocalDate,
   progressForTargetPeriod,
   targetForDate,
@@ -40,6 +44,9 @@ import { ServiceError } from "./errors";
 
 export type HabitDatabase = PostgresJsDatabase<typeof schema>;
 
+const totalXp = (awards: Map<string, number>) =>
+  [...awards.values()].reduce((total, xp) => total + xp, 0);
+
 const toTarget = (row: schema.HabitTargetRow): HabitTarget => ({
   id: row.id,
   habitId: row.habitId,
@@ -48,6 +55,7 @@ const toTarget = (row: schema.HabitTargetRow): HabitTarget => ({
   unit: row.unit,
   cadence: row.cadence,
   scheduledWeekdays: row.scheduledWeekdays,
+  scheduledHours: row.scheduledHours,
   effectiveFrom: row.effectiveFrom,
   effectiveTo: row.effectiveTo,
 });
@@ -57,6 +65,7 @@ const toCheckin = (row: schema.HabitCheckinRow): Checkin => ({
   habitId: row.habitId,
   targetId: row.targetId,
   localDate: row.localDate,
+  localHour: row.localHour,
   value: row.value,
   isSkipped: row.isSkipped,
   note: row.note,
@@ -86,6 +95,22 @@ export async function createHabit(
   const input = parsed.data;
 
   return database.transaction(async (transaction) => {
+    const [activeHabits] = await transaction
+      .select({ value: count() })
+      .from(schema.habits)
+      .where(
+        and(
+          eq(schema.habits.userId, userId),
+          isNull(schema.habits.archivedAt),
+        ),
+      );
+    if (Number(activeHabits?.value ?? 0) >= 5) {
+      throw new ServiceError(
+        "CONFLICT",
+        "Free plan includes up to 5 active habits. Archive a habit or choose Boost to create more.",
+      );
+    }
+
     const [order] = await transaction
       .select({ highest: max(schema.habits.sortOrder) })
       .from(schema.habits)
@@ -99,6 +124,7 @@ export async function createHabit(
         description: input.description,
         icon: input.icon,
         accentToken: input.accentToken,
+        customColor: input.customColor,
         startDate: input.startDate,
         sortOrder: Number(order?.highest ?? -1) + 1,
       })
@@ -113,6 +139,7 @@ export async function createHabit(
         unit: input.target.unit,
         cadence: input.target.cadence,
         scheduledWeekdays: input.target.scheduledWeekdays,
+        scheduledHours: input.target.scheduledHours,
         effectiveFrom: input.startDate,
       })
       .returning();
@@ -193,6 +220,7 @@ export async function createTargetVersion(
         unit: input.target.unit,
         cadence: input.target.cadence,
         scheduledWeekdays: input.target.scheduledWeekdays,
+        scheduledHours: input.target.scheduledHours,
       })
       .where(eq(schema.habitTargets.id, openTarget.id))
       .returning();
@@ -226,6 +254,7 @@ export async function createTargetVersion(
         unit: input.target.unit,
         cadence: input.target.cadence,
         scheduledWeekdays: input.target.scheduledWeekdays,
+        scheduledHours: input.target.scheduledHours,
         effectiveFrom: input.effectiveFrom,
       })
       .returning();
@@ -339,17 +368,43 @@ export async function deleteCheckin(
   userId: string,
   habitId: string,
   localDate: string,
+  localHour: number | null = null,
 ) {
   if (!isValidLocalDate(localDate)) {
     throw new ServiceError("VALIDATION_ERROR", "Check-in date is invalid");
   }
   await ownedHabitWithUser(database, userId, habitId);
+  const targets = (
+    await database
+      .select()
+      .from(schema.habitTargets)
+      .where(eq(schema.habitTargets.habitId, habitId))
+      .orderBy(asc(schema.habitTargets.effectiveFrom))
+  ).map(toTarget);
+  const target = targetForDate(targets, localDate);
+  if (!target) throw new ServiceError("CONFLICT", "No target applies to this date");
+  if (target.cadence === "hourly") {
+    if (
+      typeof localHour !== "number" ||
+      !Number.isInteger(localHour) ||
+      localHour < 0 ||
+      localHour > 23
+    ) {
+      throw new ServiceError("VALIDATION_ERROR", "Hourly check-in hour is invalid");
+    }
+  } else if (localHour !== null) {
+    throw new ServiceError("VALIDATION_ERROR", "This habit does not use hourly check-ins");
+  }
+  const hourSlot = localHour as number;
   const [deleted] = await database
     .delete(schema.habitCheckins)
     .where(
       and(
         eq(schema.habitCheckins.habitId, habitId),
         eq(schema.habitCheckins.localDate, localDate),
+        target.cadence === "hourly"
+          ? eq(schema.habitCheckins.localHour, hourSlot)
+          : isNull(schema.habitCheckins.localHour),
       ),
     )
     .returning({ id: schema.habitCheckins.id });
@@ -364,6 +419,7 @@ export type DashboardHabit = {
     | "description"
     | "icon"
     | "accentToken"
+    | "customColor"
     | "startDate"
     | "sortOrder"
   >;
@@ -388,6 +444,12 @@ export type DashboardHabit = {
   } | null;
 };
 
+export type XpHistoryPoint = {
+  date: string;
+  earnedXp: number;
+  totalXp: number;
+};
+
 export async function getDashboard(
   database: HabitDatabase,
   {
@@ -404,10 +466,18 @@ export async function getDashboard(
   const habitRows = await database
     .select()
     .from(schema.habits)
-    .where(and(eq(schema.habits.userId, userId), isNull(schema.habits.archivedAt)))
+    .where(eq(schema.habits.userId, userId))
     .orderBy(asc(schema.habits.sortOrder), asc(schema.habits.createdAt));
 
-  if (!habitRows.length) return { habits: [] as DashboardHabit[] };
+  if (!habitRows.length) {
+    return {
+      habits: [] as DashboardHabit[],
+      archivedHabits: [] as DashboardHabit[],
+      totalXp: 0,
+      xpHistory: [] as XpHistoryPoint[],
+    };
+  }
+  const activeHabitRows = habitRows.filter((habit) => habit.archivedAt === null);
   const habitIds = habitRows.map(({ id }) => id);
 
   const [targetRows, checkinRows, checkpointRows] = await Promise.all([
@@ -447,6 +517,39 @@ export async function getDashboard(
     awardRows.map((award) => [award.checkpointId, award]),
   );
 
+  const xpByDate = new Map<string, number>();
+  const earnedXp = habitRows.reduce((total, habit) => {
+    const targets = targetRows
+      .filter((target) => target.habitId === habit.id)
+      .map(toTarget);
+    const checkins = checkinRows
+      .filter((checkin) => checkin.habitId === habit.id)
+      .map(toCheckin);
+    const awards = calculateHabitXp(targets, checkins);
+    for (const checkin of checkins) {
+      const xp = awards.get(checkin.id) ?? 0;
+      xpByDate.set(checkin.localDate, (xpByDate.get(checkin.localDate) ?? 0) + xp);
+    }
+    return total + totalXp(awards);
+  }, 0);
+  const historyEnd = to < today ? to : today;
+  const historyStart = habitRows.reduce(
+    (earliest, habit) => (habit.startDate < earliest ? habit.startDate : earliest),
+    habitRows[0].startDate,
+  );
+  let runningXp = 0;
+  const xpHistory: XpHistoryPoint[] =
+    historyStart > historyEnd
+      ? []
+      : eachDayOfInterval({
+          start: parseISO(`${historyStart}T12:00:00`),
+          end: parseISO(`${historyEnd}T12:00:00`),
+        }).map((date) => {
+          const localDate = format(date, "yyyy-MM-dd");
+          const earnedXp = xpByDate.get(localDate) ?? 0;
+          runningXp += earnedXp;
+          return { date: localDate, earnedXp, totalXp: runningXp };
+        });
   const dashboardHabits = habitRows.map((habit): DashboardHabit => {
     const targets = targetRows
       .filter((target) => target.habitId === habit.id)
@@ -487,6 +590,7 @@ export async function getDashboard(
         description: habit.description,
         icon: habit.icon,
         accentToken: habit.accentToken,
+        customColor: habit.customColor,
         startDate: habit.startDate,
         sortOrder: habit.sortOrder,
       },
@@ -514,7 +618,16 @@ export async function getDashboard(
     };
   });
 
-  return { habits: dashboardHabits };
+  return {
+    habits: dashboardHabits.filter((item) =>
+      activeHabitRows.some((habit) => habit.id === item.habit.id),
+    ),
+    archivedHabits: dashboardHabits.filter((item) =>
+      !activeHabitRows.some((habit) => habit.id === item.habit.id),
+    ),
+    totalXp: earnedXp,
+    xpHistory,
+  };
 }
 
 async function ownedHabitWithUser(
@@ -580,8 +693,33 @@ export async function upsertCheckin(
   if (!target) {
     throw new ServiceError("CONFLICT", "No target applies to this date");
   }
+  if (target.cadence === "hourly" && localDate !== today) {
+    throw new ServiceError(
+      "VALIDATION_ERROR",
+      "Hourly check-ins can only be recorded for the current day",
+    );
+  }
+  const localHour = target.cadence === "hourly" ? hourInTimeZone(timezone, now) : null;
+  if (
+    target.cadence === "hourly" &&
+    !isScheduled(target, localDate, localHour ?? undefined)
+  ) {
+    throw new ServiceError(
+      "VALIDATION_ERROR",
+      "This habit is not scheduled for the current hour",
+    );
+  }
 
   return database.transaction(async (transaction) => {
+    const entryRowsBefore = await transaction
+      .select()
+      .from(schema.habitCheckins)
+      .where(eq(schema.habitCheckins.habitId, habitId));
+    const xpBefore = totalXp(calculateHabitXp(targets, entryRowsBefore.map(toCheckin)));
+    const slotMatches = (entry: schema.HabitCheckinRow) =>
+      entry.localDate === localDate && entry.localHour === localHour;
+    const existing = entryRowsBefore.find(slotMatches);
+
     if (input.value === 0 && !input.isSkipped && !input.note) {
       await transaction
         .delete(schema.habitCheckins)
@@ -589,35 +727,37 @@ export async function upsertCheckin(
           and(
             eq(schema.habitCheckins.habitId, habitId),
             eq(schema.habitCheckins.localDate, localDate),
+            localHour === null
+              ? isNull(schema.habitCheckins.localHour)
+              : eq(schema.habitCheckins.localHour, localHour),
           ),
         );
-      return { checkin: null, newAwards: [] as schema.CheckpointAwardRow[] };
+      const entriesAfter = entryRowsBefore.filter((entry) => !slotMatches(entry));
+      return {
+        checkin: null,
+        newAwards: [] as schema.CheckpointAwardRow[],
+        xpDelta: totalXp(calculateHabitXp(targets, entriesAfter.map(toCheckin))) - xpBefore,
+      };
     }
 
-    const [checkin] = await transaction
-      .insert(schema.habitCheckins)
-      .values({
+    const values = {
         habitId,
         targetId: target.id,
         localDate,
+        localHour,
         value: input.value,
         isSkipped: input.isSkipped,
         note: input.note,
         checkedAt: input.value > 0 ? now : null,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [schema.habitCheckins.habitId, schema.habitCheckins.localDate],
-        set: {
-          targetId: target.id,
-          value: input.value,
-          isSkipped: input.isSkipped,
-          note: input.note,
-          checkedAt: input.value > 0 ? now : null,
-          updatedAt: now,
-        },
-      })
-      .returning();
+      };
+    const [checkin] = existing
+      ? await transaction
+          .update(schema.habitCheckins)
+          .set(values)
+          .where(eq(schema.habitCheckins.id, existing.id))
+          .returning()
+      : await transaction.insert(schema.habitCheckins).values(values).returning();
 
     const [allEntryRows, checkpointRows, existingAwards] = await Promise.all([
       transaction
@@ -645,6 +785,7 @@ export async function upsertCheckin(
       targets,
       checkins: allEntryRows.map(toCheckin),
     });
+    const xpDelta = totalXp(calculateHabitXp(targets, allEntryRows.map(toCheckin))) - xpBefore;
     const awardedIds = new Set(existingAwards.map(({ checkpointId }) => checkpointId));
     const newAwards: schema.CheckpointAwardRow[] = [];
 
@@ -665,7 +806,7 @@ export async function upsertCheckin(
       if (award) newAwards.push(award);
     }
 
-    return { checkin, newAwards };
+    return { checkin, newAwards, xpDelta };
   });
 }
 

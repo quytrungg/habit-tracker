@@ -14,6 +14,7 @@ const habit: DashboardHabit = {
     description: null,
     icon: "💧",
     accentToken: "azure",
+    customColor: null,
     startDate: "2026-08-01",
     sortOrder: 0,
   },
@@ -57,7 +58,7 @@ const habit: DashboardHabit = {
 describe("CheckInDrawer", () => {
   it("edits progress and the note for the selected habit day", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ checkin: { id: "entry-1" }, newAwards: [] })),
+      new Response(JSON.stringify({ checkin: { id: "entry-1" }, newAwards: [], xpDelta: 11 })),
     );
     const onSaved = vi.fn();
     const user = userEvent.setup();
@@ -74,6 +75,7 @@ describe("CheckInDrawer", () => {
     await user.type(screen.getByLabelText("Progress in glasses"), "8");
     await user.clear(screen.getByLabelText("Daily note"));
     await user.type(screen.getByLabelText("Daily note"), "Finished after lunch");
+    expect(screen.getByText(/This check-in will earn 11 XP/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save check-in" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
@@ -86,7 +88,28 @@ describe("CheckInDrawer", () => {
       isSkipped: false,
       note: "Finished after lunch",
     });
-    expect(onSaved).toHaveBeenCalledWith([]);
+    expect(onSaved).toHaveBeenCalledWith({ awards: [], xpDelta: 11 });
+  });
+
+  it("previews proportional XP for time-spent habits", async () => {
+    const user = userEvent.setup();
+    render(
+      <CheckInDrawer
+        date="2026-08-14"
+        habit={{
+          ...habit,
+          targets: [{ ...habit.targets[0], metric: "duration", targetValue: 30, unit: "minutes" }],
+          checkins: [],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    await user.clear(screen.getByLabelText("Progress in minutes"));
+    await user.type(screen.getByLabelText("Progress in minutes"), "15");
+    expect(screen.getByLabelText("Progress in minutes")).toHaveAttribute("step", "1");
+    expect(screen.getByText(/This check-in will earn 11 XP/)).toBeInTheDocument();
   });
 
   it("keeps the note when only progress is cleared", async () => {

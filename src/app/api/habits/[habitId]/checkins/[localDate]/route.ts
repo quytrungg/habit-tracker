@@ -24,11 +24,13 @@ export async function PUT(request: Request, { params }: RouteParams) {
   }
 }
 
-export async function DELETE(_: Request, { params }: RouteParams) {
+export async function DELETE(request: Request, { params }: RouteParams) {
   try {
     const user = await requireUser();
     const { habitId, localDate } = await params;
-    await deleteCheckin(db, user.id, habitId, localDate);
+    const hourParam = new URL(request.url).searchParams.get("hour");
+    const localHour = hourParam === null ? null : Number(hourParam);
+    await deleteCheckin(db, user.id, habitId, localDate, localHour);
     return new Response(null, { status: 204 });
   } catch (error) {
     return apiError(error);

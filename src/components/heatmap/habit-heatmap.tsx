@@ -15,7 +15,7 @@ export function HabitHeatmap({
   onSelectDate,
 }: {
   cells: HeatmapCell[];
-  onSelectDate: (date: string) => void;
+  onSelectDate?: (date: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const firstDate = cells[0]?.date;
@@ -89,9 +89,9 @@ export function HabitHeatmap({
                 data-has-note={cell.hasNote}
                 data-intensity={cell.intensity}
                 data-state={cell.state}
-                disabled={cell.state === "future"}
+                disabled={cell.state === "future" || !onSelectDate}
                 key={cell.date}
-                onClick={() => onSelectDate(cell.date)}
+                onClick={() => onSelectDate?.(cell.date)}
                 onKeyDown={moveFocus}
                 style={{ gridColumn: column, gridRow: getISODay(date) }}
                 title={cell.label}

@@ -10,18 +10,21 @@ import type {
   HabitCadence,
   HabitMetric,
 } from "@/domain/types";
+import { habitAccentStyle } from "./accent-style";
 
 type HabitFormValues = {
   name: string;
   description: string;
   icon: string;
   accentToken: AccentToken;
+  customColor: string | null;
   startDate: string;
   metric: HabitMetric;
   targetValue: number;
   unit: string;
   cadence: HabitCadence;
   scheduledWeekdays: number[];
+  scheduledHours: number[];
   checkpoints: Array<{
     title: string;
     metric: CheckpointMetric;
@@ -31,7 +34,18 @@ type HabitFormValues = {
 };
 
 const icons = ["🔥", "📚", "💧", "🏃", "🧘", "✍️", "🌱", "💤"];
-const accents: AccentToken[] = ["emerald", "azure", "amber", "violet", "rose"];
+const accents: AccentToken[] = [
+  "emerald",
+  "azure",
+  "amber",
+  "violet",
+  "rose",
+  "teal",
+  "indigo",
+  "lime",
+  "coral",
+  "fuchsia",
+];
 const weekdays = [
   [1, "M"],
   [2, "T"],
@@ -41,6 +55,7 @@ const weekdays = [
   [6, "S"],
   [7, "S"],
 ] as const;
+const hours = Array.from({ length: 24 }, (_, hour) => hour);
 
 export function HabitForm({
   today,
@@ -52,6 +67,7 @@ export function HabitForm({
   onCreated: () => void | Promise<void>;
 }) {
   const [serverError, setServerError] = useState<string | null>(null);
+  const [showCustomIcon, setShowCustomIcon] = useState(false);
   const {
     control,
     register,
@@ -64,12 +80,14 @@ export function HabitForm({
       description: "",
       icon: "🔥",
       accentToken: "emerald",
+      customColor: null,
       startDate: today,
       metric: "binary",
       targetValue: 1,
       unit: "",
       cadence: "daily",
       scheduledWeekdays: [],
+      scheduledHours: [],
       checkpoints: [],
     },
   });
@@ -78,7 +96,9 @@ export function HabitForm({
   const cadence = useWatch({ control, name: "cadence" });
   const icon = useWatch({ control, name: "icon" });
   const accent = useWatch({ control, name: "accentToken" });
+  const customColor = useWatch({ control, name: "customColor" });
   const selectedWeekdays = useWatch({ control, name: "scheduledWeekdays" });
+  const selectedHours = useWatch({ control, name: "scheduledHours" });
   const name = useWatch({ control, name: "name" });
   const startDate = useWatch({ control, name: "startDate" });
 
@@ -94,6 +114,7 @@ export function HabitForm({
             description: values.description || null,
             icon: values.icon,
             accentToken: values.accentToken,
+            customColor: values.customColor,
             startDate: values.startDate,
             target: {
               metric: values.metric,
@@ -104,6 +125,10 @@ export function HabitForm({
               scheduledWeekdays:
                 values.cadence === "daily" && values.scheduledWeekdays.length
                   ? values.scheduledWeekdays
+                  : null,
+              scheduledHours:
+                values.cadence === "hourly" && values.scheduledHours.length
+                  ? values.scheduledHours
                   : null,
             },
             checkpoints: values.checkpoints.map((checkpoint) => ({
@@ -139,6 +164,16 @@ export function HabitForm({
     );
   };
 
+  const toggleHour = (hour: number) => {
+    setValue(
+      "scheduledHours",
+      selectedHours.includes(hour)
+        ? selectedHours.filter((candidate) => candidate !== hour)
+        : [...selectedHours, hour].sort((left, right) => left - right),
+      { shouldDirty: true },
+    );
+  };
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <section
@@ -146,6 +181,7 @@ export function HabitForm({
         aria-modal="true"
         className="habit-form-modal"
         data-accent={accent}
+        style={habitAccentStyle(customColor)}
         onMouseDown={(event) => event.stopPropagation()}
         role="dialog"
       >
@@ -192,13 +228,40 @@ export function HabitForm({
                       aria-label={`Use ${candidate} icon`}
                       aria-pressed={icon === candidate}
                       key={candidate}
-                      onClick={() => setValue("icon", candidate)}
+                      onClick={() => {
+                        setValue("icon", candidate, { shouldDirty: true });
+                        setShowCustomIcon(false);
+                      }}
                       type="button"
                     >
                       {candidate}
                     </button>
                   ))}
+                  <button
+                    aria-label="Use a custom emoji"
+                    aria-pressed={showCustomIcon}
+                    className="add-icon-choice"
+                    onClick={() => setShowCustomIcon(true)}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" size={18} />
+                  </button>
                 </div>
+                {showCustomIcon ? (
+                  <label className="field custom-icon-field">
+                    <span>Custom emoji</span>
+                    <input
+                      aria-label="Custom emoji"
+                      autoFocus
+                      maxLength={32}
+                      onChange={(event) =>
+                        setValue("icon", event.target.value, { shouldDirty: true })
+                      }
+                      placeholder="Choose or paste an emoji"
+                      value={icon}
+                    />
+                  </label>
+                ) : null}
               </div>
               <div className="choice-group">
                 <span>Color</span>
@@ -206,13 +269,32 @@ export function HabitForm({
                   {accents.map((candidate) => (
                     <button
                       aria-label={`Use ${candidate} color`}
-                      aria-pressed={accent === candidate}
+                      aria-pressed={accent === candidate && !customColor}
                       data-accent={candidate}
                       key={candidate}
-                      onClick={() => setValue("accentToken", candidate)}
+                      onClick={() => {
+                        setValue("accentToken", candidate, { shouldDirty: true });
+                        setValue("customColor", null, { shouldDirty: true });
+                      }}
                       type="button"
                     />
                   ))}
+                  <label
+                    aria-label="Choose a custom color"
+                    className="custom-color-choice"
+                    data-selected={Boolean(customColor)}
+                    title="Choose a custom color"
+                  >
+                    <Plus aria-hidden="true" size={17} />
+                    <input
+                      aria-label="Custom color"
+                      onChange={(event) =>
+                        setValue("customColor", event.target.value, { shouldDirty: true })
+                      }
+                      type="color"
+                      value={customColor ?? "#44df79"}
+                    />
+                  </label>
                 </div>
               </div>
               <label className="field">
@@ -223,32 +305,33 @@ export function HabitForm({
 
             <fieldset className="form-section">
               <legend>2 · Target</legend>
-              <label className="field">
+              <fieldset aria-label="How do you measure it?" className="radio-group">
                 <span>How do you measure it?</span>
-                <select {...register("metric")}>
-                  <option value="binary">Done or not done</option>
-                  <option value="count">A quantity</option>
-                  <option value="duration">Time spent</option>
-                </select>
-              </label>
-              <label className="field">
+                <div>
+                  <label><input type="radio" value="binary" {...register("metric")} /> Done or not done</label>
+                  <label><input type="radio" value="count" {...register("metric")} /> A quantity</label>
+                  <label><input type="radio" value="duration" {...register("metric")} /> Time spent</label>
+                </div>
+              </fieldset>
+              <fieldset aria-label="Cadence" className="radio-group">
                 <span>Cadence</span>
-                <select {...register("cadence")}>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly total</option>
-                </select>
-              </label>
+                <div>
+                  <label><input type="radio" value="hourly" {...register("cadence")} /> Hourly</label>
+                  <label><input type="radio" value="daily" {...register("cadence")} /> Daily</label>
+                  <label><input type="radio" value="weekly" {...register("cadence")} /> Weekly</label>
+                </div>
+              </fieldset>
               {metric !== "binary" ? (
                 <div className="split-fields">
                   <label className="field">
-                    <span>{cadence === "daily" ? "Daily target" : "Weekly target"}</span>
+                    <span>{cadence === "hourly" ? "Hourly target" : cadence === "daily" ? "Daily target" : "Weekly target"}</span>
                     <input
-                      min="0.01"
-                      step={metric === "duration" ? 5 : 1}
+                      min="1"
+                      step="1"
                       type="number"
                       {...register("targetValue", {
                         required: true,
-                        min: 0.01,
+                        min: 1,
                         valueAsNumber: true,
                       })}
                     />
@@ -275,6 +358,24 @@ export function HabitForm({
                         type="button"
                       >
                         {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {cadence === "hourly" ? (
+                <div className="choice-group">
+                  <span>Scheduled hours <em>empty means every hour</em></span>
+                  <div className="hour-choices">
+                    {hours.map((hour) => (
+                      <button
+                        aria-label={`Toggle ${String(hour).padStart(2, "0")}:00`}
+                        aria-pressed={selectedHours.includes(hour)}
+                        key={hour}
+                        onClick={() => toggleHour(hour)}
+                        type="button"
+                      >
+                        {String(hour).padStart(2, "0")}:00
                       </button>
                     ))}
                   </div>
@@ -358,7 +459,7 @@ export function HabitForm({
 
           <aside className="habit-preview" aria-label="Habit card preview">
             <p className="eyebrow">LIVE PREVIEW</p>
-            <div className="mini-habit-card" data-accent={accent}>
+            <div className="mini-habit-card" data-accent={accent} style={habitAccentStyle(customColor)}>
               <span className="habit-icon">{icon}</span>
               <div>
                 <strong>{name || "Your new habit"}</strong>

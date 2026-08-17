@@ -46,8 +46,19 @@ export function targetForDate(
     )[0];
 }
 
-export function isScheduled(target: HabitTarget, localDate: string) {
+export function isScheduled(
+  target: HabitTarget,
+  localDate: string,
+  localHour?: number,
+) {
   if (target.cadence === "weekly") return true;
+  if (target.cadence === "hourly") {
+    return (
+      !target.scheduledHours?.length ||
+      localHour === undefined ||
+      target.scheduledHours.includes(localHour)
+    );
+  }
   if (!target.scheduledWeekdays?.length) return true;
   return target.scheduledWeekdays.includes(getISODay(fromLocalDate(localDate)));
 }
@@ -88,6 +99,20 @@ function weeklyValue(
   }, 0);
 }
 
+function hourlyValue(
+  target: HabitTarget,
+  localDate: string,
+  checkins: Checkin[],
+) {
+  return checkins.reduce(
+    (sum, entry) =>
+      entry.localDate === localDate && entry.targetId === target.id
+        ? sum + valueForEntry(entry)
+        : sum,
+    0,
+  );
+}
+
 export function progressForTargetPeriod(
   target: HabitTarget,
   localDate: string,
@@ -96,12 +121,89 @@ export function progressForTargetPeriod(
   if (target.cadence === "weekly") {
     return weeklyValue(target, localDate, checkins);
   }
+  if (target.cadence === "hourly") {
+    return hourlyValue(target, localDate, checkins);
+  }
   return valueForEntry(
     checkins.find(
       (entry) =>
         entry.localDate === localDate && entry.targetId === target.id,
     ),
   );
+}
+
+/**
+ * The XP available for completing one target period. More frequent daily habits
+ * require more sustained effort; a weekly target has the largest single pool.
+ */
+export function baseXpForTarget(target: HabitTarget) {
+  if (target.cadence === "hourly") return 4;
+  if (target.cadence === "weekly") return 30;
+
+  const scheduledDays = target.scheduledWeekdays?.length ?? 7;
+  return 8 + scheduledDays * 2;
+}
+
+function allocatePeriodXp(target: HabitTarget, entries: Checkin[]) {
+  const awards = new Map<string, number>();
+  const baseXp = baseXpForTarget(target);
+  let progress = 0;
+
+  for (const entry of [...entries].sort(
+    (left, right) =>
+      compareLocalDates(left.localDate, right.localDate) || left.id.localeCompare(right.id),
+  )) {
+    const before = Math.min(progress, target.targetValue);
+    progress += valueForEntry(entry);
+    const after = Math.min(progress, target.targetValue);
+    awards.set(
+      entry.id,
+      Math.floor((after / target.targetValue) * baseXp) -
+        Math.floor((before / target.targetValue) * baseXp),
+    );
+  }
+
+  return awards;
+}
+
+/**
+ * Awards XP in integer increments as progress accumulates toward each target.
+ * Quantity and duration habits therefore earn more XP as the check-in gets
+ * closer to their target, while a completed period receives its full pool.
+ */
+export function calculateHabitXp(targets: HabitTarget[], checkins: Checkin[]) {
+  const awards = new Map<string, number>();
+
+  for (const target of targets) {
+    const targetEntries = checkins.filter(
+      (entry) => entry.targetId === target.id,
+    );
+    if (target.cadence === "daily" || target.cadence === "hourly") {
+      for (const entry of targetEntries) {
+        if (
+          !isScheduled(target, entry.localDate, entry.localHour ?? undefined)
+        ) {
+          awards.set(entry.id, 0);
+          continue;
+        }
+        for (const [id, xp] of allocatePeriodXp(target, [entry])) awards.set(id, xp);
+      }
+      continue;
+    }
+
+    const byWeek = new Map<string, Checkin[]>();
+    for (const entry of targetEntries) {
+      const { start } = weekBounds(entry.localDate);
+      const entries = byWeek.get(start) ?? [];
+      entries.push(entry);
+      byWeek.set(start, entries);
+    }
+    for (const entries of byWeek.values()) {
+      for (const [id, xp] of allocatePeriodXp(target, entries)) awards.set(id, xp);
+    }
+  }
+
+  return awards;
 }
 
 function heatmapState({
@@ -114,6 +216,18 @@ function heatmapState({
   checkins: Checkin[];
 }): HeatmapState {
   if (!entry) return "missing";
+  if (target.cadence === "hourly") {
+    const entries = checkins.filter(
+      (candidate) =>
+        candidate.localDate === entry.localDate && candidate.targetId === target.id,
+    );
+    const value = hourlyValue(target, entry.localDate, checkins);
+    if (value > 0) return value >= target.targetValue ? "complete" : "partial";
+    if (entries.every((candidate) => candidate.isSkipped)) return "skipped";
+    return entries.some((candidate) => candidate.note?.trim())
+      ? "note-only"
+      : "missing";
+  }
   if (entry.isSkipped) return "skipped";
   if (entry.value <= 0) return entry.note ? "note-only" : "missing";
   if (target.cadence === "weekly") {
@@ -163,13 +277,22 @@ export function buildHeatmap({
   targets: HabitTarget[];
   checkins: Checkin[];
 }): HeatmapCell[] {
-  const entryByDate = new Map(checkins.map((entry) => [entry.localDate, entry]));
+  const entriesByDate = new Map<string, Checkin[]>();
+  for (const entry of checkins) {
+    const entries = entriesByDate.get(entry.localDate) ?? [];
+    entries.push(entry);
+    entriesByDate.set(entry.localDate, entries);
+  }
 
   return datesBetween(startDate, endDate).map((date) => {
     const target = targetForDate(targets, date);
-    const entry = entryByDate.get(date);
-    const value = valueForEntry(entry);
-    const hasNote = Boolean(entry?.note?.trim());
+    const entries = entriesByDate.get(date) ?? [];
+    const entry = entries.at(-1);
+    const value =
+      target?.cadence === "hourly"
+        ? hourlyValue(target, date, checkins)
+        : valueForEntry(entry);
+    const hasNote = entries.some((candidate) => Boolean(candidate.note?.trim()));
     let state: HeatmapState;
 
     if (compareLocalDates(date, today) > 0) state = "future";
@@ -210,7 +333,7 @@ function buildPeriods({
     const target = targetForDate(targets, date);
     if (!target) continue;
 
-    if (target.cadence === "daily") {
+    if (target.cadence === "daily" || target.cadence === "hourly") {
       if (isScheduled(target, date)) {
         periods.set(`day:${date}`, { key: date, start: date, end: date, target });
       }
@@ -251,6 +374,10 @@ function periodIsComplete(period: HabitPeriod, checkins: Checkin[]) {
         candidate.targetId === period.target.id,
     );
     return valueForEntry(entry) >= period.target.targetValue;
+  }
+
+  if (period.target.cadence === "hourly") {
+    return hourlyValue(period.target, period.start, checkins) >= period.target.targetValue;
   }
 
   const value = checkins.reduce((sum, entry) => {
@@ -335,6 +462,16 @@ export function todayInTimeZone(timeZone: string, now = new Date()) {
   }).formatToParts(now);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
+}
+
+export function hourInTimeZone(timeZone: string, now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Number(value.hour);
 }
 
 export function previousLocalDate(localDate: string) {
